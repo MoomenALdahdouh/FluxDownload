@@ -1,0 +1,17 @@
+.DS_Store
+.build/
+.swiftpm/
+build/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.swp
+ipc.sock
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+*.pem
+Extensions/signing/*.pem
+.cursor/
