@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FluxDownload",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "description": "Send downloads and captured video/audio streams to the FluxDownload macOS app.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApglYOeye8UMUSvi3JnLbW0NVIrRhCtOuguxty1JC3YWOybfcwsvDWjtWyNuhI9m3l9Xd/Tdmr85cJZcn2If2RBxWXAncGhD8OaeQ2h5RGP2xAK/M9Z4f53cCECYhS7XYr3CPJ9ILVZjCckYIinhXPbAVSjidOOCbamOptW6gVixtI9KgQCw5oOhbpPswRUNz921kupSbBvGn2BRF04rXywzTrcxNecVm2p+oa60geqbdKPoXMIxFaob2NfMyQg680vcNDQJUIpM8RRuo+qzWUQ2PNba1+v/xZ9gwyqmP9GxWX7cAFdKYV8cgTEkJkhcap3GGgFJnkrc/Hsci3+dmCQIDAQAB",
   "permissions": [

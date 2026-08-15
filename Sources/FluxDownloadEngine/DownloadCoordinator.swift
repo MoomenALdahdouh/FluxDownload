@@ -183,6 +183,10 @@ public actor DownloadCoordinator {
         try await store.upsertDownload(record)
         publish(DownloadSnapshot(record: record, segments: []))
         if request.startImmediately {
+            pauseFlags[record.id] = false
+            if running[record.id] == nil {
+                startTask(record.id)
+            }
             await schedule()
         }
         return record
@@ -195,19 +199,22 @@ public actor DownloadCoordinator {
             try await store.upsertDownload(record)
         }
         pauseFlags[id] = false
+        if running[id] == nil {
+            startTask(id)
+        }
         await schedule()
     }
 
     public func pause(_ id: UUID) async throws {
+        guard var record = try await store.download(id: id) else { throw FluxError.downloadNotFound(id) }
+        guard record.status.canPause, DownloadStateMachine.canTransition(from: record.status, to: .paused) else { return }
         pauseFlags[id] = true
         running[id]?.cancel()
-        if var record = try await store.download(id: id), record.status.canPause {
-            record.status = try DownloadStateMachine.transition(from: record.status, to: .paused)
-            record.currentSpeed = 0
-            try await store.upsertDownload(record)
-            let segments = try await store.segments(for: id)
-            publish(DownloadSnapshot(record: record, segments: segments))
-        }
+        record.status = try DownloadStateMachine.transition(from: record.status, to: .paused)
+        record.currentSpeed = 0
+        try await store.upsertDownload(record)
+        let segments = try await store.segments(for: id)
+        publish(DownloadSnapshot(record: record, segments: segments))
     }
 
     public func pauseAll() async throws {
@@ -288,16 +295,19 @@ public actor DownloadCoordinator {
     }
 
     public func schedule() async {
-        guard networkAvailable else { return }
         let records = (try? await store.allDownloads()) ?? []
         let activeCount = running.values.count
         let queued = records.filter { record in
             if running[record.id] != nil { return false }
+            if pauseFlags[record.id] == true { return false }
             if record.status == .queued { return true }
             if record.status == .paused && pauseFlags[record.id] == false { return true }
             return false
         }
-            .sorted { $0.priority.rawValue > $1.priority.rawValue }
+            .sorted {
+                if $0.priority != $1.priority { return $0.priority.rawValue > $1.priority.rawValue }
+                return $0.createdAt > $1.createdAt
+            }
         let slots = max(0, maxConcurrent - activeCount)
         for record in queued.prefix(slots) {
             if running[record.id] != nil { continue }
@@ -366,10 +376,12 @@ public actor DownloadCoordinator {
                 record.temporaryPath = temp.path
                 record.connectionCount = 1
                 record.resumeSupported = false
-                record.size = nil
+                if let clen = youtubeQuery(url, "clen").flatMap(Int64.init), clen > 0 {
+                    record.size = clen
+                }
                 record.status = try DownloadStateMachine.transition(from: .connecting, to: .downloading)
                 try await persist(record)
-                try await downloadSingle(record: &record, url: url, temp: temp, headers: headers, resume: false)
+                try await downloadSingle(record: &record, url: url, temp: temp, headers: headers, resume: false, omitRange: true)
                 if record.downloadedBytes < 8192 {
                     throw FluxError.unsupportedMedia
                 }
@@ -488,7 +500,7 @@ public actor DownloadCoordinator {
         try await persist(record, segments: segments)
     }
 
-    private func downloadSingle(record: inout DownloadRecord, url: URL, temp: URL, headers: [String: String], resume: Bool) async throws {
+    private func downloadSingle(record: inout DownloadRecord, url: URL, temp: URL, headers: [String: String], resume: Bool, omitRange: Bool = false) async throws {
         let fd = try PartialFile.create(at: temp, size: record.size)
         defer { PartialFile.syncAndClose(fd) }
         let downloader = SegmentDownloader(
@@ -500,7 +512,7 @@ public actor DownloadCoordinator {
         let written = try await downloader.download(
             url: url,
             offset: 0,
-            length: record.size,
+            length: omitRange ? nil : record.size,
             resumeFrom: resume ? record.downloadedBytes : 0,
             referrer: record.referrer,
             headers: headers,
@@ -611,6 +623,10 @@ public actor DownloadCoordinator {
             Task { await schedule() }
         }
     }
+}
+
+private func youtubeQuery(_ url: URL, _ name: String) -> String? {
+    URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == name })?.value
 }
 
 private func applyProxy(_ settings: AppSettings, to config: URLSessionConfiguration) {

@@ -151,8 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.setContentSize(NSSize(width: 450, height: 420))
         window.minSize = NSSize(width: 420, height: 280)
         window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.level = .normal
+        window.hidesOnDeactivate = true
+        window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
         if let screen = NSScreen.main {
             let offset = CGFloat(statusWindows.count) * 28
@@ -162,7 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         statusWindows[id] = window
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {

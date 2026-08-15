@@ -322,7 +322,9 @@ final class AppServices: ObservableObject {
                 )
                 try? await store.insertBrowserEvent(type: envelope.type.rawValue, url: payload.url, detail: nil)
                 try await reload()
-                AppDelegate.shared?.showDownloadStatus(id: record.id)
+                if payload.openStatusWindow != false {
+                    AppDelegate.shared?.showDownloadStatus(id: record.id)
+                }
                 return BrowserResponse(id: envelope.id, ok: true, downloadID: record.id.uuidString)
             } catch let error as FluxError {
                 return BrowserResponse(id: envelope.id, ok: false, error: error.userMessage, diagnostic: error.diagnosticDetail)

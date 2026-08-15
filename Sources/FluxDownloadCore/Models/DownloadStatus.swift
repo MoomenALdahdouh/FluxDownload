@@ -27,7 +27,7 @@ public enum DownloadStatus: String, Codable, Sendable, CaseIterable, Identifiabl
 
     public var canPause: Bool {
         switch self {
-        case .queued, .preparing, .connecting, .downloading, .stalled, .retrying:
+        case .preparing, .connecting, .downloading, .stalled, .retrying:
             return true
         default:
             return false
