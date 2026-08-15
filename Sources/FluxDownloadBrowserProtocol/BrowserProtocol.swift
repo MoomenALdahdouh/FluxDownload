@@ -85,6 +85,8 @@ public struct DownloadRequestPayload: Codable, Sendable, Equatable {
     public var cookies: String?
     public var userAgent: String?
     public var capture: Bool
+    /// When false, the Mac app still queues the file but does not pop a status window.
+    public var openStatusWindow: Bool?
 
     public init(
         url: String,
@@ -98,7 +100,8 @@ public struct DownloadRequestPayload: Codable, Sendable, Equatable {
         headers: [String: String]? = nil,
         cookies: String? = nil,
         userAgent: String? = nil,
-        capture: Bool = false
+        capture: Bool = false,
+        openStatusWindow: Bool? = nil
     ) {
         self.url = url
         self.pageURL = pageURL
@@ -112,6 +115,7 @@ public struct DownloadRequestPayload: Codable, Sendable, Equatable {
         self.cookies = cookies
         self.userAgent = userAgent
         self.capture = capture
+        self.openStatusWindow = openStatusWindow
     }
 }
 

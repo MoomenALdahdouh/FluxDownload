@@ -76,7 +76,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sender.tab?.url || "",
             message.audioFilename || null,
             false,
-            message.audioMimeType || "audio/mp4"
+            message.audioMimeType || "audio/mp4",
+            null,
+            null,
+            sender.tab?.id,
+            false
           );
         }
         sendResponse(primary);
@@ -104,7 +108,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "status") {
     ping().then(async (response) => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      sendResponse({ ...response, formats: formatsForTab(tab?.id) });
+      let formats = formatsForTab(tab?.id);
+      const videoId = fluxYouTubeVideoId(tab?.url || "");
+      if (videoId) {
+        try {
+          const resolved = await fluxResolveYouTubePlayer(videoId);
+          if (resolved?.ok && resolved.formats?.length) {
+            formats = fluxPresentYouTubeQualities(fluxMergeFormats([...formats, ...resolved.formats]));
+          }
+        } catch {
+          // keep sniffed formats
+        }
+      }
+      sendResponse({ ...response, formats });
     });
     return true;
   }
@@ -225,7 +241,7 @@ async function resolveYouTubeDownload(pageURL, tabId) {
   return fluxResolveYouTubePlayer(videoId);
 }
 
-async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize, browserRequestId, tabId) {
+async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize, browserRequestId, tabId, openStatusWindow = true) {
   if (!url || url.startsWith("blob:") || url.startsWith("file:") || url.startsWith("data:")) {
     return { ok: false, error: "This media has no HTTP file URL yet. Play it, then try again." };
   }
@@ -257,13 +273,16 @@ async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize,
   if (videoId) {
     const resolvedTab = tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
     const resolved = await resolveYouTubeDownload(pageURL || url, resolvedTab);
-    if (resolved?.ok && resolved.url) {
-      downloadURL = resolved.url;
-      downloadMime = resolved.mimeType || downloadMime;
-      downloadUA = resolved.userAgent;
-      downloadReferrer = null;
-      downloadCookies = null;
-      downloadHeaders = {};
+    if (resolved?.ok) {
+      const picked = fluxPickYouTubeFormat(resolved, url, downloadMime);
+      if (picked?.url) {
+        downloadURL = picked.url;
+        downloadMime = picked.mimeType || downloadMime;
+        downloadUA = resolved.userAgent || downloadUA;
+        downloadReferrer = null;
+        downloadCookies = null;
+        downloadHeaders = {};
+      }
     }
   }
   const payload = {
@@ -282,7 +301,8 @@ async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize,
       capture: !!capture,
       cookies: downloadCookies,
       userAgent: downloadUA,
-      headers: downloadHeaders
+      headers: downloadHeaders,
+      openStatusWindow: openStatusWindow !== false
     }
   };
   try {

@@ -145,6 +145,8 @@ const FLUX_YOUTUBE_ITAG = {
   136: { height: 720, container: "MP4", hasVideo: true, hasAudio: false },
   137: { height: 1080, container: "MP4", hasVideo: true, hasAudio: false },
   160: { height: 144, container: "MP4", hasVideo: true, hasAudio: false },
+  264: { height: 1440, container: "MP4", hasVideo: true, hasAudio: false },
+  266: { height: 2160, container: "MP4", hasVideo: true, hasAudio: false },
   242: { height: 240, container: "WebM", hasVideo: true, hasAudio: false },
   243: { height: 360, container: "WebM", hasVideo: true, hasAudio: false },
   244: { height: 480, container: "WebM", hasVideo: true, hasAudio: false },
@@ -294,7 +296,79 @@ function fluxMergeFormats(formats) {
 }
 
 function fluxBestAudio(formats) {
-  return formats.find((format) => format.hasAudio && !format.hasVideo) || null;
+  const audios = (formats || []).filter((format) => format.hasAudio && !format.hasVideo);
+  return (
+    audios.find((format) => fluxYouTubeItag(format.url) === 140) ||
+    audios.find((format) => (format.container || "").toUpperCase() === "M4A") ||
+    audios.find((format) => fluxYouTubeItag(format.url) === 251) ||
+    audios[0] ||
+    null
+  );
+}
+
+function fluxYouTubeFormatScore(format) {
+  let score = format.height || 0;
+  if (format.hasVideo && format.hasAudio) score += 1000;
+  if ((format.container || "").toUpperCase() === "MP4") score += 50;
+  if ((format.mimeType || "").includes("avc1")) score += 20;
+  if ((format.mimeType || "").includes("mp4a")) score += 10;
+  return score;
+}
+
+function fluxPresentYouTubeQualities(formats) {
+  const ranked = [...(formats || [])].sort((a, b) => fluxYouTubeFormatScore(b) - fluxYouTubeFormatScore(a));
+  const muxedKeys = new Set();
+  const videoKeys = new Set();
+  const muxed = [];
+  const video = [];
+  for (const format of ranked) {
+    if (format.hasVideo && format.hasAudio) {
+      const key = `m:${format.height || 0}`;
+      if (muxedKeys.has(key)) continue;
+      muxedKeys.add(key);
+      muxed.push(format);
+      continue;
+    }
+    if (format.hasVideo) {
+      const fps = /\b60/.test(format.label || "") ? 60 : 30;
+      const key = `v:${format.height || 0}:${fps}`;
+      if (videoKeys.has(key)) continue;
+      if (fps === 30 && muxedKeys.has(`m:${format.height || 0}`)) continue;
+      videoKeys.add(key);
+      video.push(format);
+    }
+  }
+  const audio = fluxBestAudio(ranked);
+  return fluxMergeFormats([...muxed, ...video, ...(audio ? [audio] : [])]);
+}
+
+function fluxPickYouTubeFormat(resolved, sourceURL, mimeType) {
+  const formats = resolved?.formats || [];
+  let wanted = null;
+  try {
+    wanted = new URL(sourceURL).searchParams.get("itag");
+  } catch {
+    // ignore
+  }
+  if (wanted) {
+    const match = formats.find((format) => String(fluxYouTubeItag(format.url)) === String(wanted));
+    if (match) return match;
+  }
+  const mime = (mimeType || "").toLowerCase();
+  let mimeQuery = "";
+  try {
+    mimeQuery = (new URL(sourceURL).searchParams.get("mime") || "").toLowerCase();
+  } catch {
+    // ignore
+  }
+  const wantAudio = mime.startsWith("audio/") || mimeQuery.startsWith("audio");
+  if (wantAudio) return fluxBestAudio(formats);
+  return (
+    formats.find((format) => fluxYouTubeItag(format.url) === 18) ||
+    formats.find((format) => format.hasVideo && format.hasAudio) ||
+    formats.find((format) => format.hasVideo) ||
+    (resolved?.url ? { url: resolved.url, mimeType: resolved.mimeType } : null)
+  );
 }
 
 function fluxExtractJSONObject(text, marker) {
@@ -423,6 +497,13 @@ function fluxYouTubeVideoId(url) {
 
 const FLUX_YT_PLAYER_CLIENTS = [
   {
+    clientName: "ANDROID_VR",
+    clientVersion: "1.62.27",
+    userAgent: "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eights_us; Build/SQ3A.220605.009.A1; Cronet/127.0.6510.5)",
+    extra: { deviceMake: "Oculus", deviceModel: "Quest 3", androidSdkVersion: 32, osName: "Android", osVersion: "12L" },
+    needsVisitor: true
+  },
+  {
     clientName: "ANDROID",
     clientVersion: "20.10.38",
     userAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
@@ -433,38 +514,66 @@ const FLUX_YT_PLAYER_CLIENTS = [
     clientVersion: "20.10.4",
     userAgent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)",
     extra: { deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "18.3.2.22D82" }
-  },
-  {
-    clientName: "ANDROID_VR",
-    clientVersion: "1.60.19",
-    userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; en_US) gzip",
-    extra: { deviceMake: "Oculus", deviceModel: "Quest 3", androidSdkVersion: 32 }
   }
 ];
+
+function fluxReadVisitorData() {
+  try {
+    if (typeof ytcfg !== "undefined") {
+      const value = (typeof ytcfg.get === "function" && ytcfg.get("VISITOR_DATA")) || ytcfg.data_?.VISITOR_DATA;
+      if (value) return value;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const html = document.documentElement?.innerHTML || "";
+    const match = html.match(/"VISITOR_DATA":"([^"]+)"/) || html.match(/"visitorData":"([^"]+)"/);
+    if (match) return match[1];
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function fluxYouTubeVisitorData() {
+  const local = typeof document !== "undefined" ? fluxReadVisitorData() : null;
+  if (local) return local;
+  try {
+    const res = await fetch("https://www.youtube.com/", { credentials: "include" });
+    const text = await res.text();
+    const match = text.match(/"VISITOR_DATA":"([^"]+)"/) || text.match(/"visitorData":"([^"]+)"/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
 
 async function fluxResolveYouTubePlayer(videoId) {
   if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
     return { ok: false, reason: "bad-video-id" };
   }
+  const visitor = await fluxYouTubeVisitorData();
   for (const client of FLUX_YT_PLAYER_CLIENTS) {
+    if (client.needsVisitor && !visitor) continue;
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
+      const clientContext = {
+        clientName: client.clientName,
+        clientVersion: client.clientVersion,
+        hl: "en",
+        gl: "US",
+        utcOffsetMinutes: 0,
+        ...client.extra
+      };
+      if (visitor) clientContext.visitorData = visitor;
       const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          context: {
-            client: {
-              clientName: client.clientName,
-              clientVersion: client.clientVersion,
-              hl: "en",
-              gl: "US",
-              utcOffsetMinutes: 0,
-              ...client.extra
-            }
-          },
+          context: { client: clientContext },
           videoId,
           contentCheckOk: true,
           racyCheckOk: true
@@ -473,22 +582,23 @@ async function fluxResolveYouTubePlayer(videoId) {
       });
       clearTimeout(timer);
       const json = await res.json();
-      const formats = [...(json.streamingData?.formats || []), ...(json.streamingData?.adaptiveFormats || [])];
-      const withUrl = formats.filter((row) => typeof row.url === "string" && row.url.indexOf("http") === 0);
-      const pick =
-        withUrl.find((row) => Number(row.itag) === 18) ||
-        withUrl.find((row) => /video\/mp4/i.test(row.mimeType || "") && (row.audioQuality || row.audioSampleRate)) ||
-        withUrl.find((row) => /video\/mp4/i.test(row.mimeType || ""));
-      if (pick && pick.url) {
-        return {
-          ok: true,
-          url: pick.url,
-          mimeType: pick.mimeType || "video/mp4",
-          itag: pick.itag,
-          userAgent: client.userAgent,
-          client: client.clientName
-        };
-      }
+      const mapped = fluxFormatsFromStreamingData(json.streamingData);
+      if (!mapped.length) continue;
+      const presented = fluxPresentYouTubeQualities(mapped);
+      const fallback =
+        presented.find((format) => format.hasVideo && format.hasAudio) ||
+        presented.find((format) => format.hasVideo) ||
+        presented[0];
+      if (!fallback?.url) continue;
+      return {
+        ok: true,
+        formats: mapped,
+        url: fallback.url,
+        mimeType: fallback.mimeType || "video/mp4",
+        itag: fluxYouTubeItag(fallback.url),
+        userAgent: client.userAgent,
+        client: client.clientName
+      };
     } catch {
       // try the next client
     }

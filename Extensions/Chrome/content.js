@@ -56,7 +56,18 @@ async function formatsForPlayer(media) {
   }
   const sniffed = await requestSniffed();
   const page = fluxExtractPageStreamingFormats();
-  const formats = fluxMergeFormats([...local, ...sniffed, ...page]);
+  let formats = fluxMergeFormats([...local, ...sniffed, ...page]);
+  const videoId = fluxYouTubeVideoId(location.href);
+  if (videoId) {
+    try {
+      const resolved = await fluxResolveYouTubePlayer(videoId);
+      if (resolved?.ok && resolved.formats?.length) {
+        formats = fluxPresentYouTubeQualities(fluxMergeFormats([...formats, ...resolved.formats]));
+      }
+    } catch {
+      // keep captured formats
+    }
+  }
   return {
     drm: isDRM(media),
     blobOnly: playerSources(media).some((url) => url.startsWith("blob:")) && httpSources.length === 0,
@@ -184,7 +195,7 @@ function renderPanel(anchor, media, info) {
     panel.append(list);
     const note = document.createElement("p");
     note.className = "flux-note";
-    note.textContent = "Captured from this page’s network streams. Video-only YouTube qualities also send the matching audio file.";
+    note.textContent = "YouTube qualities come from the video’s available streams. Progressive 360p is one file with audio; higher resolutions send a video file plus a matching audio file.";
     panel.append(note);
   }
 

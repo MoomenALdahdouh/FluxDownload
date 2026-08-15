@@ -13,4 +13,6 @@ EME / `mediaKeys`, FairPlay-style HLS keys, and DASH `ContentProtection` stay re
 
 YouTube adaptive qualities are often video-only. Choosing one also queues the best captured audio file. Progressive 360p/720p rows include audio in a single file when YouTube still publishes them.
 
+On YouTube, the overlay asks YouTube’s player API (Android client) for every direct stream URL the video actually has, then lists one row per resolution. Downloads refresh that same itag at click time so the app does not fall back to 360p.
+
 Play the media once if the overlay says it is waiting — the player must request the stream before a file URL exists.
