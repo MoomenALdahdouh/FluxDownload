@@ -17,9 +17,6 @@ public final class IPCServer: @unchecked Sendable {
 
     public func start() throws {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !ownsSocketFile() && Self.isLive(path: path) {
-            return
-        }
         unlink(path.path)
         socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else { throw FluxError.configuration("Unable to create IPC socket.") }

@@ -23,6 +23,7 @@ cp "$BIN_DIR/FluxDownloadNativeHost" "$MACOS/FluxDownloadNativeHost"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
 cp "$ROOT/LICENSE" "$RES/LICENSE"
+cp "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
 chmod +x "$MACOS/FluxDownload" "$MACOS/FluxDownloadNativeHost"
 
 ENTITLEMENTS="$ROOT/Resources/FluxDownload.entitlements"
@@ -41,3 +42,16 @@ fi
 
 echo "Built $APP"
 file "$MACOS/FluxDownload"
+
+HOST_JSON="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.fluxdownload.native.json"
+mkdir -p "$(dirname "$HOST_JSON")"
+cat > "$HOST_JSON" <<EOF
+{
+  "name": "com.fluxdownload.native",
+  "description": "FluxDownload",
+  "path": "$MACOS/FluxDownloadNativeHost",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://cdhmompibjahkccghpbepifodgcallpi/"]
+}
+EOF
+echo "Native host registered at $HOST_JSON -> $MACOS/FluxDownloadNativeHost"

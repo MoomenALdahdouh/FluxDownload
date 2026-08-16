@@ -99,12 +99,16 @@ public struct ProbeClient: Sendable {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let sabr = items.contains { $0.name == "sabr" && $0.value == "1" }
         let itag = items.contains { $0.name == "itag" && !($0.value ?? "").isEmpty }
+        let path = url.path.lowercased()
+        let playlist = lower.contains("mpegurl")
+            || path.contains(".m3u8")
+            || host.contains("licdn.com")
         let fake = lower.contains("yt-ump")
             || lower.contains("vnd.yt")
             || bodyHead.contains("sabr.")
             || sabr
             || (host.contains("googlevideo") && !itag)
-            || (lower.hasPrefix("video/") && (size ?? 0) > 0 && (size ?? 0) < 8192)
+            || (!playlist && lower.hasPrefix("video/") && (size ?? 0) > 0 && (size ?? 0) < 8192)
         if fake { throw FluxError.unsupportedMedia }
     }
 }

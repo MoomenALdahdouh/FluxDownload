@@ -2,6 +2,7 @@ import Foundation
 import Network
 import FluxDownloadCore
 import FluxDownloadPersistence
+import FluxDownloadMedia
 
 public struct NewDownloadRequest: Sendable {
     public var url: URL
@@ -167,17 +168,13 @@ public actor DownloadCoordinator {
             browserRequestID: request.browserRequestID,
             descriptionText: request.descriptionText
         )
-        if !request.headers.isEmpty {
-            let safe = request.headers.filter { !Redactor.isSensitiveHeader($0.key) }
-            record.customHeadersJSON = String(data: try JSONEncoder().encode(safe), encoding: .utf8)
-        }
-        if let cookie = request.cookieHeader, !cookie.isEmpty {
-            let ref = "cookie.\(record.id.uuidString)"
-            do {
-                try CredentialStore.save(account: ref, secret: cookie)
-                record.cookieRef = ref
-            } catch {
-                AppLog.warning("Keychain cookie write failed", category: "engine")
+        if !request.headers.isEmpty || !(request.cookieHeader ?? "").isEmpty {
+            var headers = request.headers.filter { !Redactor.isSensitiveHeader($0.key) }
+            if let cookie = request.cookieHeader, !cookie.isEmpty {
+                headers["Cookie"] = cookie
+            }
+            if !headers.isEmpty {
+                record.customHeadersJSON = String(data: try JSONEncoder().encode(headers), encoding: .utf8)
             }
         }
         try await store.upsertDownload(record)
@@ -361,10 +358,14 @@ public actor DownloadCoordinator {
             if let json = record.customHeadersJSON, let data = json.data(using: .utf8) {
                 headers = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
             }
-            if let ref = record.cookieRef, let cookie = try? CredentialStore.load(account: ref), !cookie.isEmpty {
-                headers["Cookie"] = cookie
-            }
             let googlevideo = url.host?.localizedCaseInsensitiveContains("googlevideo") == true
+            let linkedIn = HLSParser.isLinkedInHost(url)
+            let capturedSegments = popSegmentURLs(from: &headers)
+            if linkedIn {
+                headers.removeValue(forKey: "Cookie")
+                if headers["Accept"] == nil { headers["Accept"] = "*/*" }
+                if headers["Accept-Language"] == nil { headers["Accept-Language"] = "en-US,en;q=0.9" }
+            }
             let destinationDir: URL
             let temp: URL
             if googlevideo {
@@ -385,6 +386,18 @@ public actor DownloadCoordinator {
                 if record.downloadedBytes < 8192 {
                     throw FluxError.unsupportedMedia
                 }
+            } else if !capturedSegments.isEmpty || HLSParser.isLinkedInSegment(url) {
+                let urls = capturedSegments.isEmpty ? [url] : capturedSegments
+                destinationDir = URL(fileURLWithPath: record.saveDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+                let list = HLSSegmentList(segments: urls.map { HLSSegment(url: $0) })
+                try await writeHLSSegments(record: &record, list: list, headers: headers, destinationDir: destinationDir)
+                temp = URL(fileURLWithPath: record.temporaryPath ?? destinationDir.appendingPathComponent("\(record.filename).\(Brand.partialExtension)").path)
+            } else if HLSParser.looksLikePlaylist(url: url, mimeType: record.mimeType) {
+                destinationDir = URL(fileURLWithPath: record.saveDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+                try await downloadHLS(record: &record, url: url, headers: headers, destinationDir: destinationDir)
+                temp = URL(fileURLWithPath: record.temporaryPath ?? destinationDir.appendingPathComponent("\(record.filename).\(Brand.partialExtension)").path)
             } else {
             let probe = ProbeClient(session: session, userAgent: record.userAgent ?? settings.userAgent, extraHeaders: headers)
             let meta = try await probe.probe(url: url, referrer: record.referrer)
@@ -524,6 +537,241 @@ public actor DownloadCoordinator {
         )
         record.downloadedBytes = written
         if record.size == nil { record.size = written }
+    }
+
+    private func downloadHLS(record: inout DownloadRecord, url: URL, headers: [String: String], destinationDir: URL) async throws {
+        let userAgent = record.userAgent ?? settings.userAgent
+        var playlistURL = HLSParser.normalizedPlaylistURL(url)
+        var triedPlaylists = Set<String>()
+        if HLSParser.isJunkLinkedInMedia(url) {
+            throw FluxError.unsupportedMedia
+        }
+        var hops = 0
+        while hops < 3 {
+            hops += 1
+            triedPlaylists.insert(playlistURL.absoluteString)
+            let data: Data
+            let response: HTTPURLResponse
+            do {
+                (data, response) = try await fetchBytes(url: playlistURL, headers: headers, referrer: record.referrer, userAgent: userAgent)
+            } catch {
+                if let next = playlistAlternates(from: HLSParser.normalizedPlaylistURL(url)).first(where: { !triedPlaylists.contains($0.absoluteString) }) {
+                    playlistURL = next
+                    continue
+                }
+                throw error
+            }
+            playlistURL = response.url ?? playlistURL
+            if HLSParser.isPlaylistData(data) {
+                let playlistText = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+                let list = try HLSParser.segmentList(playlistText, base: playlistURL)
+                if list.isMaster {
+                    let group = try HLSParser.parse(playlistText, base: playlistURL)
+                    if group.isProtected { throw FluxError.protectedMedia }
+                    guard let best = bestHLSVariant(group.representations) else {
+                        throw FluxError.unsupportedMedia
+                    }
+                    playlistURL = best.url
+                    continue
+                }
+                try await writeHLSSegments(record: &record, list: list, headers: headers, destinationDir: destinationDir)
+                return
+            }
+            if isLikelyMediaFile(data) {
+                ensureMediaFilename(&record, ext: mediaExtension(for: data, fallback: record.fileExtension))
+                let temp = destinationDir.appendingPathComponent("\(record.filename).\(Brand.partialExtension)")
+                record.temporaryPath = temp.path
+                record.connectionCount = 1
+                record.resumeSupported = false
+                record.status = try DownloadStateMachine.transition(from: .connecting, to: .downloading)
+                try await persist(record)
+                try writeWholeFile(data, to: temp)
+                record.downloadedBytes = Int64(data.count)
+                record.size = Int64(data.count)
+                try await persist(record)
+                return
+            }
+            if let next = playlistAlternates(from: HLSParser.normalizedPlaylistURL(url)).first(where: { !triedPlaylists.contains($0.absoluteString) }) {
+                playlistURL = next
+                continue
+            }
+            throw FluxError.unsupportedMedia
+        }
+        throw FluxError.unsupportedMedia
+    }
+
+    private func popSegmentURLs(from headers: inout [String: String]) -> [URL] {
+        let raw = headers.removeValue(forKey: "X-Flux-Segment-URLs")
+            ?? headers.removeValue(forKey: "x-flux-segment-urls")
+        guard let raw, let data = raw.data(using: .utf8),
+              let strings = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return strings.compactMap { try? URLValidator.parse($0) }
+    }
+
+    private func playlistAlternates(from url: URL) -> [URL] {
+        var result = [url]
+        guard url.pathExtension.isEmpty else { return result }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.path = url.path + ".m3u8"
+        if let next = components?.url { result.append(next) }
+        components?.path = url.path + "/playlist.m3u8"
+        if let next = components?.url { result.append(next) }
+        return result
+    }
+
+    private func writeHLSSegments(
+        record: inout DownloadRecord,
+        list: HLSSegmentList,
+        headers: [String: String],
+        destinationDir: URL
+    ) async throws {
+        ensureMediaFilename(&record, ext: list.usesFMP4 || list.segments.contains(where: { HLSParser.isLinkedInHost($0.url) }) ? "mp4" : "ts")
+        let temp = destinationDir.appendingPathComponent("\(record.filename).\(Brand.partialExtension)")
+        record.temporaryPath = temp.path
+        record.connectionCount = 1
+        record.resumeSupported = false
+        record.size = nil
+        record.status = try DownloadStateMachine.transition(from: .connecting, to: .downloading)
+        try await persist(record)
+
+        let fd = try PartialFile.create(at: temp, size: nil)
+        defer { PartialFile.syncAndClose(fd) }
+        let downloader = SegmentDownloader(
+            session: session,
+            userAgent: record.userAgent ?? settings.userAgent,
+            timeout: settings.requestTimeoutSeconds
+        )
+        let id = record.id
+        let referrer = record.referrer
+        var fileOffset: Int64 = 0
+        var items: [(url: URL, range: (start: Int64, end: Int64)?)] = []
+        if let mapURL = list.mapURL {
+            let range: (start: Int64, end: Int64)?
+            if let length = list.mapByteLength, length > 0 {
+                let start = list.mapByteOffset ?? 0
+                range = (start, start + length - 1)
+            } else {
+                range = nil
+            }
+            items.append((mapURL, range))
+        }
+        for segment in list.segments {
+            let range: (start: Int64, end: Int64)?
+            if let length = segment.byteLength, length > 0 {
+                let start = segment.byteOffset ?? 0
+                range = (start, start + length - 1)
+            } else {
+                range = nil
+            }
+            items.append((segment.url, range))
+        }
+        guard !items.isEmpty else { throw FluxError.unsupportedMedia }
+        for (index, item) in items.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
+            let baseOffset = fileOffset
+            let written = try await downloader.download(
+                url: item.url,
+                offset: baseOffset,
+                length: nil,
+                resumeFrom: 0,
+                referrer: referrer,
+                headers: headers,
+                fd: fd,
+                shouldCancel: { Task.isCancelled },
+                onProgress: { downloaded, speed in
+                    Task { await self.noteProgress(id: id, downloaded: baseOffset + downloaded, speed: speed) }
+                },
+                httpRange: item.range
+            )
+            fileOffset += written
+            record.downloadedBytes = fileOffset
+            if index == items.count - 1 || index % 8 == 0 {
+                try await persist(record)
+            }
+        }
+        if ftruncate(fd, off_t(fileOffset)) != 0 {
+            throw FluxError.filesystem("Could not set the assembled media file size.")
+        }
+        if fileOffset < 8192 {
+            throw FluxError.unsupportedMedia
+        }
+        record.downloadedBytes = fileOffset
+        record.size = fileOffset
+        try await persist(record)
+    }
+
+    private func fetchBytes(url: URL, headers: [String: String], referrer: String?, userAgent: String) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.apple.mpegurl,application/x-mpegURL,*/*", forHTTPHeaderField: "Accept")
+        if let referrer { request.setValue(referrer, forHTTPHeaderField: "Referer") }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        request.timeoutInterval = settings.requestTimeoutSeconds
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw FluxError.networkUnavailable }
+        if http.statusCode == 401 || http.statusCode == 403 { throw FluxError.accessDenied }
+        if http.statusCode == 404 { throw FluxError.notFound }
+        if http.statusCode == 429 { throw FluxError.rateLimited }
+        if http.statusCode >= 500 { throw HTTPStatusMapper.error(for: http.statusCode) }
+        if !(200...399).contains(http.statusCode) { throw HTTPStatusMapper.error(for: http.statusCode) }
+        return (data, http)
+    }
+
+    private func writeWholeFile(_ data: Data, to url: URL) throws {
+        let fd = try PartialFile.create(at: url, size: Int64(data.count))
+        defer { PartialFile.syncAndClose(fd) }
+        try PartialFile.write(fd: fd, data: data, offset: 0)
+    }
+
+    private func bestHLSVariant(_ representations: [MediaRepresentation]) -> MediaRepresentation? {
+        representations
+            .filter { !$0.isProtected }
+            .max { left, right in
+                if (left.height ?? 0) != (right.height ?? 0) {
+                    return (left.height ?? 0) < (right.height ?? 0)
+                }
+                return (left.bandwidth ?? 0) < (right.bandwidth ?? 0)
+            }
+    }
+
+    private func ensureMediaFilename(_ record: inout DownloadRecord, ext: String) {
+        let current = record.fileExtension.lowercased()
+        if current == ext { return }
+        if current.isEmpty || ["m3u8", "m3u", "html", "htm", "txt"].contains(current) {
+            record.filename = replaceFilenameExtension(record.filename, with: ext)
+            record.fileExtension = ext
+        }
+    }
+
+    private func replaceFilenameExtension(_ filename: String, with ext: String) -> String {
+        let ns = filename as NSString
+        let base = ns.deletingPathExtension
+        let stem = base.isEmpty ? "download" : base
+        return "\(stem).\(ext)"
+    }
+
+    private func mediaExtension(for data: Data, fallback: String) -> String {
+        if data.count >= 12, data.subdata(in: 4..<8) == Data("ftyp".utf8) { return "mp4" }
+        if data.starts(with: [0x1A, 0x45, 0xDF, 0xA3]) { return "webm" }
+        if data.starts(with: Data("ID3".utf8)) || data.starts(with: [0xFF, 0xFB]) { return "mp3" }
+        let current = fallback.lowercased()
+        if !current.isEmpty && current != "m3u8" && current != "m3u" { return current }
+        return "mp4"
+    }
+
+    private func isLikelyMediaFile(_ data: Data) -> Bool {
+        if let head = String(data: data.prefix(80), encoding: .utf8)?.lowercased() {
+            if head.contains("<html") || head.contains("<!doctype") || head.hasPrefix("{") { return false }
+        }
+        if data.count >= 12, data.subdata(in: 4..<8) == Data("ftyp".utf8) { return true }
+        if data.starts(with: [0x1A, 0x45, 0xDF, 0xA3]) { return true }
+        if data.starts(with: Data("ID3".utf8)) { return true }
+        return data.count > 64 * 1024
     }
 
     private func noteProgress(id: UUID, downloaded: Int64, speed: Int64) async {

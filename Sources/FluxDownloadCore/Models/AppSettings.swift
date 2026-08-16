@@ -37,7 +37,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     public init(
         launchAtLogin: Bool = false,
-        launchMinimized: Bool = false,
+        launchMinimized: Bool = true,
         menuBarEnabled: Bool = true,
         menuBarOnly: Bool = false,
         notificationsEnabled: Bool = true,

@@ -1,6 +1,6 @@
 # Architecture
 
-FluxDownload is a Swift 6 SPM package. UI never talks to SQLite or URLSession.
+FluxDownload is a Swift 6 Swift Package. The UI never talks to SQLite or `URLSession` directly.
 
 - `FluxDownloadCore` — models, state machine, sanitization, logging
 - `FluxDownloadPersistence` — sqlite3 WAL actor + migrations

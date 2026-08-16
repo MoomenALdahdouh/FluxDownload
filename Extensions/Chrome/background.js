@@ -68,7 +68,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "media.download") {
-    sendDownload(message.url, sender.tab?.url || message.pageURL || "", message.filename || null, false, message.mimeType, null, null, sender.tab?.id)
+    sendDownload(
+      message.url,
+      sender.tab?.url || message.pageURL || "",
+      message.filename || null,
+      false,
+      message.mimeType,
+      null,
+      null,
+      sender.tab?.id,
+      true,
+      message.segmentURLs
+    )
       .then(async (primary) => {
         if (primary?.ok && message.audioURL) {
           await sendDownload(
@@ -181,7 +192,24 @@ function rememberURL(tabId, url, mime, pageURL, extras = {}) {
     entry.pageKey = key || entry.pageKey;
   }
   const format = fluxFormatFromURL(canonical, mime, extras);
-  entry.streams.set(fluxStreamKey(canonical), format);
+  const key = fluxStreamKey(canonical);
+  const previous = entry.streams.get(key);
+  if (previous) {
+    format.segmentURLs = fluxStableMediaURLs([
+      ...(previous.segmentURLs || []),
+      previous.url,
+      format.url,
+      canonical
+    ]);
+    format.url = format.segmentURLs[0] || format.url;
+    if ((previous.height || 0) > (format.height || 0)) {
+      format.height = previous.height;
+      format.label = previous.label || format.label;
+    }
+  } else {
+    format.segmentURLs = fluxStableMediaURLs([canonical]);
+  }
+  entry.streams.set(key, format);
   tabMedia.set(tabId, entry);
 }
 
@@ -241,7 +269,7 @@ async function resolveYouTubeDownload(pageURL, tabId) {
   return fluxResolveYouTubePlayer(videoId);
 }
 
-async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize, browserRequestId, tabId, openStatusWindow = true) {
+async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize, browserRequestId, tabId, openStatusWindow = true, segmentURLs = null) {
   if (!url || url.startsWith("blob:") || url.startsWith("file:") || url.startsWith("data:")) {
     return { ok: false, error: "This media has no HTTP file URL yet. Play it, then try again." };
   }
@@ -264,8 +292,16 @@ async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize,
   let downloadCookies = await cookieHeaderFor(url, pageURL);
   let downloadHeaders = {};
   try {
+    const downloadHost = new URL(url).hostname.toLowerCase();
+    const skipOrigin = downloadHost.includes("licdn.com") || downloadHost.includes("googlevideo") || downloadHost.includes("youtube.com");
     const origin = pageURL ? new URL(pageURL).origin : new URL(url).origin;
-    if (origin) downloadHeaders = { Origin: origin };
+    if (origin && !skipOrigin) downloadHeaders = { Origin: origin };
+    if (downloadHost.includes("licdn.com")) {
+      downloadCookies = null;
+      const segments = fluxStableMediaURLs([...(segmentURLs || []), url]);
+      if (segments[0]) downloadURL = segments[0];
+      if (segments.length) downloadHeaders = { ...downloadHeaders, "X-Flux-Segment-URLs": JSON.stringify(segments.slice(0, 400)) };
+    }
   } catch {
     // ignore
   }
@@ -306,7 +342,8 @@ async function sendDownload(url, pageURL, filename, capture, mimeType, fileSize,
     }
   };
   try {
-    return await chrome.runtime.sendNativeMessage(HOST, payload);
+    const result = await chrome.runtime.sendNativeMessage(HOST, payload);
+    return result;
   } catch (error) {
     return { ok: false, error: "Desktop app is not connected." };
   }

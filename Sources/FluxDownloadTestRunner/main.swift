@@ -104,6 +104,31 @@ enum TestRunner {
             let group = try HLSParser.parse(hls, base: URL(string: "https://cdn.example/master.m3u8")!)
             expect(group.representations.count == 2, "hls variants")
             expect(group.representations.contains(where: { $0.height == 720 }), "720p")
+            let media = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-MAP:URI="init.mp4"
+            #EXTINF:2.0,
+            seg0.m4s
+            #EXTINF:2.0,
+            seg1.m4s
+            #EXT-X-ENDLIST
+            """
+            let segments = try HLSParser.segmentList(media, base: URL(string: "https://cdn.example/play.m3u8")!)
+            expect(segments.usesFMP4, "hls map")
+            expect(segments.segments.count == 2, "hls segments")
+            expect(HLSParser.looksLikePlaylist(url: URL(string: "https://dms.licdn.com/playlist/vid/v2/D4D05AQ/example")!), "linkedin playlist")
+            expect(!HLSParser.looksLikePlaylist(url: URL(string: "https://www.youtube.com/playlist?list=abc")!), "youtube playlist page")
+            let segment = URL(string: "https://dms.licdn.com/playlist/vid/v2/D4E05AQHhcVl1rKTsBw/hls-av1-720p-quality-analysis/B4EaAAXP5WIYC8-/1/1786712508776?e=1&t=token")!
+            expect(!HLSParser.looksLikePlaylist(url: segment), "linkedin segment not playlist")
+            expect(HLSParser.isLinkedInSegment(segment), "linkedin segment shape")
+            let playlist = HLSParser.normalizedPlaylistURL(segment)
+            expect(playlist.path.hasSuffix("/hls-av1-720p-quality-analysis/B4EaAAXP5WIYC8-"), "linkedin strip segment")
+            expect(!playlist.path.contains("/1/1786712508776"), "linkedin no segment index")
+            expect(playlist.query?.contains("t=token") == true, "linkedin keep query")
+            expect(HLSParser.isJunkLinkedInMedia(URL(string: "https://dms.licdn.com/playlist/vid/v2/abc/video-auto-caption-webvtt-acs-singleton/x/0/1")!), "linkedin caption junk")
+            expect(HLSParser.isJunkLinkedInMedia(URL(string: "https://media.licdn.com/dms/image/v2/D5605AQEioQjR0Balug/videocover-high/B56aAEj6vbJMBM-")!), "linkedin cover junk")
+            expect(!HLSParser.isJunkLinkedInMedia(segment), "linkedin video not junk")
         } catch {
             expect(false, "hls parse \(error)")
         }
@@ -167,6 +192,7 @@ enum TestRunner {
         await resume()
         await notFound()
         await redirect()
+        await hls()
     }
 
     static func ranged() async {
@@ -280,6 +306,43 @@ enum TestRunner {
             expect(ok, "redirect payload")
         } catch {
             expect(false, "redirect \(error)")
+        }
+    }
+
+    static func hls() async {
+        do {
+            let master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+            media.m3u8
+            """
+            let media = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXTINF:1.0,
+            seg.bin
+            #EXT-X-ENDLIST
+            """
+            let server = try TestHTTPServer(payloadSize: 40_000, behavior: [
+                "/master.m3u8": .playlist(master, contentType: "application/vnd.apple.mpegurl"),
+                "/media.m3u8": .playlist(media, contentType: "application/vnd.apple.mpegurl"),
+                "/seg.bin": .noRange
+            ])
+            try await server.start()
+            defer { server.stop() }
+            let (store, coordinator, folder) = try await harness()
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let record = try await coordinator.add(
+                NewDownloadRequest(url: server.url("master.m3u8"), filename: "clip.m3u8", destination: folder, connections: 1)
+            )
+            try await wait(store: store, id: record.id, status: .completed)
+            let loaded = try await store.download(id: record.id)
+            let name = loaded?.filename ?? "clip.ts"
+            let data = try Data(contentsOf: folder.appendingPathComponent(name))
+            expect(data == TestPayload.bytes(count: 40_000), "hls payload")
+            expect(name.hasSuffix(".ts") || name.hasSuffix(".mp4"), "hls extension")
+        } catch {
+            expect(false, "hls \(error)")
         }
     }
 

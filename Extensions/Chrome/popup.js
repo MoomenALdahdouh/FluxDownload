@@ -2,6 +2,21 @@ const statusEl = document.getElementById("status");
 const captureEl = document.getElementById("capture");
 const formatsEl = document.getElementById("formats");
 
+function send(payload, done) {
+  try {
+    if (!chrome?.runtime?.id) {
+      done?.({ ok: false, error: "Reload the extension popup." });
+      return;
+    }
+    chrome.runtime.sendMessage(payload, (response) => {
+      const err = chrome.runtime?.lastError?.message;
+      done?.(err ? { ok: false, error: err } : response);
+    });
+  } catch {
+    done?.({ ok: false, error: "Reload the extension popup." });
+  }
+}
+
 function renderFormats(formats) {
   formatsEl.replaceChildren();
   if (!formats?.length) {
@@ -27,7 +42,7 @@ function renderFormats(formats) {
         payload.audioFilename = null;
         payload.audioMimeType = bestAudio.mimeType || "audio/mp4";
       }
-      chrome.runtime.sendMessage(payload, (response) => {
+      send(payload, (response) => {
         button.textContent = response?.ok ? "Sent to FluxDownload" : response?.error || "Not connected";
         if (!response?.ok) button.disabled = false;
       });
@@ -37,7 +52,7 @@ function renderFormats(formats) {
 }
 
 function refresh() {
-  chrome.runtime.sendMessage({ type: "status" }, (response) => {
+  send({ type: "status" }, (response) => {
     if (response?.ok) {
       statusEl.textContent = `Connected to desktop app ${response.appVersion || ""}`.trim();
     } else {
@@ -52,7 +67,7 @@ chrome.storage.local.get({ capture: true }, (value) => {
 });
 
 captureEl.addEventListener("change", () => {
-  chrome.runtime.sendMessage({ type: "setCapture", value: captureEl.checked });
+  send({ type: "setCapture", value: captureEl.checked });
 });
 
 document.getElementById("open").addEventListener("click", refresh);

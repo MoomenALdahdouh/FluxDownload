@@ -1,5 +1,8 @@
 # Troubleshooting
 
+App is blocked on first open
+: Ad-hoc builds are unsigned for Gatekeeper. Right-click `FluxDownload.app` → **Open**, or allow it under **Privacy & Security**.
+
 Native host not found
 : Start FluxDownload once. Confirm `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.fluxdownload.native.json` exists and `path` is executable.
 

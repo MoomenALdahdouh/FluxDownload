@@ -67,32 +67,142 @@ public struct MediaGroup: Sendable, Equatable, Identifiable {
     }
 }
 
+public struct HLSSegment: Sendable, Equatable {
+    public var url: URL
+    public var duration: Double?
+    public var byteOffset: Int64?
+    public var byteLength: Int64?
+
+    public init(url: URL, duration: Double? = nil, byteOffset: Int64? = nil, byteLength: Int64? = nil) {
+        self.url = url
+        self.duration = duration
+        self.byteOffset = byteOffset
+        self.byteLength = byteLength
+    }
+}
+
+public struct HLSSegmentList: Sendable, Equatable {
+    public var mapURL: URL?
+    public var mapByteOffset: Int64?
+    public var mapByteLength: Int64?
+    public var segments: [HLSSegment]
+    public var isProtected: Bool
+    public var isMaster: Bool
+    public var usesFMP4: Bool { mapURL != nil }
+
+    public var downloadURLs: [URL] {
+        var urls: [URL] = []
+        if let mapURL { urls.append(mapURL) }
+        urls.append(contentsOf: segments.map(\.url))
+        return urls
+    }
+
+    public init(
+        mapURL: URL? = nil,
+        mapByteOffset: Int64? = nil,
+        mapByteLength: Int64? = nil,
+        segments: [HLSSegment],
+        isProtected: Bool = false,
+        isMaster: Bool = false
+    ) {
+        self.mapURL = mapURL
+        self.mapByteOffset = mapByteOffset
+        self.mapByteLength = mapByteLength
+        self.segments = segments
+        self.isProtected = isProtected
+        self.isMaster = isMaster
+    }
+}
+
 public enum HLSParser {
+    public static func looksLikePlaylist(url: URL, mimeType: String? = nil) -> Bool {
+        if isLinkedInSegment(url) { return false }
+        let mime = (mimeType ?? "").lowercased()
+        if mime.contains("mpegurl") { return true }
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path.lowercased()
+        if path.contains(".m3u8") || path.hasSuffix(".m3u") { return true }
+        if host.contains("licdn.com") {
+            if path.contains("webvtt") || path.contains("caption") || path.contains("subtitle") { return false }
+            if path.contains("/playlist/vid/dash/") || path.contains("/dms/image/") || path.contains("videocover") { return false }
+            return path.contains("/playlist/") || path.contains("/vid/")
+        }
+        return false
+    }
+
+    public static func isLinkedInHost(_ url: URL) -> Bool {
+        url.host?.lowercased().contains("licdn.com") == true
+    }
+
+    public static func isLinkedInSegment(_ url: URL) -> Bool {
+        guard isLinkedInHost(url) else { return false }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return false }
+        return parts[parts.count - 1].allSatisfy(\.isNumber)
+            && parts[parts.count - 2].allSatisfy(\.isNumber)
+    }
+
+    public static func normalizedPlaylistURL(_ url: URL) -> URL {
+        let host = url.host?.lowercased() ?? ""
+        guard host.contains("licdn.com") else { return url }
+        var parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 2,
+              parts[parts.count - 1].allSatisfy(\.isNumber),
+              parts[parts.count - 2].allSatisfy(\.isNumber) else {
+            return url
+        }
+        parts.removeLast(2)
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.path = "/" + parts.joined(separator: "/")
+        return components?.url ?? url
+    }
+
+    public static func isJunkLinkedInMedia(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        return path.contains("webvtt") || path.contains("caption") || path.contains("subtitle")
+            || path.contains("/playlist/vid/dash/")
+            || path.contains("/dms/image/")
+            || path.contains("videocover")
+    }
+
+    public static func isPlaylistText(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U")
+    }
+
+    public static func isPlaylistData(_ data: Data) -> Bool {
+        var slice = data
+        if slice.starts(with: [0xEF, 0xBB, 0xBF]) {
+            slice = slice.dropFirst(3)
+        }
+        guard let text = String(data: slice.prefix(16), encoding: .utf8) else { return false }
+        return isPlaylistText(text)
+    }
+
     public static func parse(_ text: String, base: URL) throws -> MediaGroup {
         let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }
-        guard lines.first?.hasPrefix("#EXTM3U") == true else {
+        guard lines.contains(where: { $0.hasPrefix("#EXTM3U") }) else {
             throw FluxError.unsupportedMedia
         }
         var protected = false
         var representations: [MediaRepresentation] = []
         var pending: [String: String] = [:]
         for line in lines {
-            if line.hasPrefix("#EXT-X-KEY") {
-                let method = attribute(line, "METHOD") ?? ""
-                if method.uppercased().contains("SAMPLE-AES") || method.uppercased().contains("FAIRPLAY") || method == "SAMPLE-AES-CTR" {
+            if line.hasPrefix("#EXT-X-KEY") || line.hasPrefix("#EXT-X-SESSION-KEY") {
+                let method = (attribute(line, "METHOD") ?? "").uppercased()
+                if method.contains("SAMPLE-AES") || method.contains("FAIRPLAY") || method == "SAMPLE-AES-CTR" {
                     protected = true
                 }
-            }
-            if line.hasPrefix("#EXT-X-SESSION-KEY") {
-                let method = attribute(line, "METHOD") ?? ""
-                if method.uppercased().contains("SAMPLE-AES") { protected = true }
             }
             if line.hasPrefix("#EXT-X-STREAM-INF") {
                 pending = attributes(line)
                 continue
             }
             if line.isEmpty || line.hasPrefix("#") { continue }
-            guard let url = URL(string: line, relativeTo: base)?.absoluteURL else { continue }
+            guard !pending.isEmpty else { continue }
+            guard let url = URL(string: line, relativeTo: base)?.absoluteURL else {
+                pending = [:]
+                continue
+            }
             let resolution = pending["RESOLUTION"]?.split(separator: "x")
             let width = resolution.flatMap { Int($0.first ?? "") }
             let height = resolution.flatMap { Int($0.last ?? "") }
@@ -137,6 +247,95 @@ public enum HLSParser {
             }
         }
         return MediaGroup(representations: representations)
+    }
+
+    public static func segmentList(_ text: String, base: URL) throws -> HLSSegmentList {
+        let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }
+        guard lines.contains(where: { $0.hasPrefix("#EXTM3U") }) else {
+            throw FluxError.unsupportedMedia
+        }
+        var protected = false
+        var isMaster = false
+        var mapURL: URL?
+        var mapByteOffset: Int64?
+        var mapByteLength: Int64?
+        var segments: [HLSSegment] = []
+        var pendingDuration: Double?
+        var pendingRange: (offset: Int64, length: Int64)?
+        for line in lines {
+            if line.hasPrefix("#EXT-X-STREAM-INF") {
+                isMaster = true
+            }
+            if line.hasPrefix("#EXT-X-KEY") || line.hasPrefix("#EXT-X-SESSION-KEY") {
+                let method = (attribute(line, "METHOD") ?? "NONE").uppercased()
+                if method != "NONE" && !method.isEmpty {
+                    protected = true
+                }
+            }
+            if line.hasPrefix("#EXT-X-MAP") {
+                if let uri = attribute(line, "URI") {
+                    mapURL = URL(string: uri, relativeTo: base)?.absoluteURL
+                }
+                if let range = parseByteRange(attribute(line, "BYTERANGE")) {
+                    mapByteOffset = range.offset
+                    mapByteLength = range.length
+                }
+            }
+            if line.hasPrefix("#EXTINF:") {
+                let value = String(line.dropFirst(8)).split(separator: ",").first.map(String.init) ?? ""
+                pendingDuration = Double(value)
+                continue
+            }
+            if line.hasPrefix("#EXT-X-BYTERANGE:") {
+                pendingRange = parseByteRange(String(line.dropFirst(17).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            if isMaster { continue }
+            guard let url = URL(string: line, relativeTo: base)?.absoluteURL else { continue }
+            segments.append(
+                HLSSegment(
+                    url: url,
+                    duration: pendingDuration,
+                    byteOffset: pendingRange?.offset,
+                    byteLength: pendingRange?.length
+                )
+            )
+            pendingDuration = nil
+            pendingRange = nil
+        }
+        if protected {
+            throw FluxError.protectedMedia
+        }
+        if isMaster {
+            return HLSSegmentList(
+                mapURL: nil,
+                mapByteOffset: nil,
+                mapByteLength: nil,
+                segments: [],
+                isProtected: false,
+                isMaster: true
+            )
+        }
+        if segments.isEmpty && mapURL == nil {
+            throw FluxError.unsupportedMedia
+        }
+        return HLSSegmentList(
+            mapURL: mapURL,
+            mapByteOffset: mapByteOffset,
+            mapByteLength: mapByteLength,
+            segments: segments,
+            isProtected: false,
+            isMaster: false
+        )
+    }
+
+    private static func parseByteRange(_ raw: String?) -> (offset: Int64, length: Int64)? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let parts = raw.split(separator: "@", maxSplits: 1).map(String.init)
+        guard let length = Int64(parts[0]) else { return nil }
+        let offset = parts.count > 1 ? Int64(parts[1]) : 0
+        return (offset ?? 0, length)
     }
 
     private static func attributes(_ line: String) -> [String: String] {
@@ -247,13 +446,16 @@ public enum MediaDetector {
         let mime = mimeType?.lowercased() ?? ""
         let videoExt = ["mp4", "webm", "mov", "m4v", "mkv", "mpeg", "mpg"]
         let audioExt = ["mp3", "m4a", "aac", "wav", "ogg", "flac"]
+        if HLSParser.looksLikePlaylist(url: url, mimeType: mimeType) {
+            return MediaRepresentation(url: url, container: "m3u8")
+        }
         if videoExt.contains(ext) || mime.hasPrefix("video/") {
             return MediaRepresentation(url: url, container: ext.isEmpty ? "mp4" : ext, hasAudio: true, hasVideo: true)
         }
         if audioExt.contains(ext) || mime.hasPrefix("audio/") {
             return MediaRepresentation(url: url, container: ext.isEmpty ? "audio" : ext, hasAudio: true, hasVideo: false)
         }
-        if ext == "m3u8" || mime.contains("mpegurl") {
+        if ext == "m3u8" || ext == "m3u" || mime.contains("mpegurl") {
             return MediaRepresentation(url: url, container: "m3u8")
         }
         if ext == "mpd" || mime.contains("dash+xml") {
