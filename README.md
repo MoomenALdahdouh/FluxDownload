@@ -7,7 +7,7 @@
 <p align="center">Native macOS download manager with a ranged HTTP engine and Chrome capture.</p>
 
 <p align="center">
-  <a href="https://github.com/MoomenALdahdouh/FluxDownload/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen" alt="build passing"></a>
+  <a href="https://github.com/MoomenALdahdouh/FluxDownload/actions"><img src="https://img.shields.io/github/actions/workflow/status/MoomenALdahdouh/FluxDownload/ci.yml?branch=master&label=build" alt="build"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/release-v0.1.12-blue" alt="v0.1.12"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
