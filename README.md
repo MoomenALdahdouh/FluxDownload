@@ -1,108 +1,97 @@
 <p align="center">
-  <img src="Resources/AppIcon.png" width="96" alt="FluxDownload">
+  <img src="Resources/AppIcon.png" width="144" alt="FluxDownload">
 </p>
 
 <h1 align="center">FluxDownload</h1>
 
-<p align="center">
-  Native macOS download manager for HTTP, HTTPS, and captured video.<br>
-  Queues, pause/resume, Chrome capture, HLS — no cloud, no analytics.
-</p>
+<p align="center">Native macOS download manager with a ranged HTTP engine and Chrome capture.</p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-teal.svg" alt="MIT license"></a>
-  <a href="Package.swift"><img src="https://img.shields.io/badge/macOS-14%2B-blue.svg" alt="macOS 14+"></a>
-  <a href="Package.swift"><img src="https://img.shields.io/badge/Swift-6-orange.svg" alt="Swift 6"></a>
-  <a href="https://ko-fi.com/moomenaldahdouh"><img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b.svg" alt="Buy me a coffee"></a>
+  <a href="https://github.com/MoomenALdahdouh/FluxDownload/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen" alt="build passing"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/release-v0.1.12-blue" alt="v0.1.12"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/arch-arm64-lightgrey" alt="arm64">
 </p>
+
+---
 
 ## Overview
 
-FluxDownload is a local download manager for macOS. It runs as a menu-bar app, keeps transfers going after you close the window, and can take files (and many video streams) from Chrome through native messaging.
-
-It is original software — not a rebrand of Internet Download Manager.
+FluxDownload is a native AppKit download manager for Apple Silicon. The UI stays small; transfers are delegated to a Swift 6 engine (`URLSession`, Range/`pwrite`, SQLite). Chrome capture uses native messaging. No accounts, ads, telemetry, or cloud at runtime.
 
 <p align="center">
-  <img src="docs/screenshots/main-window.png" alt="FluxDownload main window" width="920">
+  <img src="docs/screenshots/main-window.png" alt="FluxDownload main window" width="880">
 </p>
+
+## Features
+
+- HTTP(S) downloads with concurrent Range segments and a single-stream fallback
+- Pause / resume, queues, and an in-process scheduler
+- Chrome native messaging for captured downloads and media URLs (including many HLS streams)
+- YouTube progressive MP4 (itag 18) and higher video-only qualities with companion audio when needed
+- LinkedIn / `licdn` HLS assembled as `.mp4` from signed fMP4 segments
+- Site grabber with `robots.txt` limits
+- Local SQLite history — no analytics
+
+Protected / DRM streams are detected and refused ([ADR-009](docs/adr/009-no-drm.md)).
+
+## Architecture
+
+Swift 6 Swift Package. The UI never talks to SQLite or `URLSession` directly.
+
+| Module | Role |
+|--------|------|
+| `FluxDownloadCore` | Models, sanitization, logging |
+| `FluxDownloadPersistence` | sqlite3 WAL actor |
+| `FluxDownloadEngine` | Ranged `pwrite` downloader |
+| `FluxDownloadMedia` | HLS / DASH parsing |
+| `FluxDownloadIPC` | Chrome native-messaging bridge |
+| `FluxDownloadApp` | AppKit + SwiftUI shell |
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [`docs/adr/`](docs/adr/).
 
 ## Requirements
 
-- macOS 14 or later
-- Swift 6 (Apple Command Line Tools are enough; Xcode is not required)
-- Optional: Google Chrome for browser capture
+- macOS 14 or later (Apple Silicon)
+- Swift 6 (Xcode Command Line Tools are enough)
+- Optional: Google Chrome for capture
 
-Safari support needs Xcode and is not in this tree yet.
-
-## Install and run
+## Build
 
 ```bash
 git clone https://github.com/MoomenALdahdouh/FluxDownload.git
 cd FluxDownload
-
-# Build the .app (also registers the Chrome native host)
 bash Scripts/package-app.sh
-
 open build/FluxDownload.app
 ```
 
-The first launch is ad-hoc signed. If Gatekeeper blocks it, open **System Settings → Privacy & Security** and allow FluxDownload, or right-click the app and choose **Open**.
+The script builds `build/FluxDownload.app`, ad-hoc signs it, and registers the Chrome native host. If Gatekeeper blocks the first launch, right-click the app and choose **Open**.
 
-Quit from **FluxDownload → Quit** (or the menu bar). Closing the window does not stop downloads.
-
-### Chrome capture (optional)
-
-1. Open FluxDownload once so the native host is registered.
-2. Chrome → `chrome://extensions` → Developer mode → **Load unpacked** → `Extensions/Chrome`.
-3. Play a video (or start a download), then use the overlay or the extension popup to send it to FluxDownload.
-
-The unpacked extension ID must stay `cdhmompibjahkccghpbepifodgcallpi` (it is pinned in `manifest.json`).
-
-### CLI (optional)
+Closing the window does not quit downloads. Use **FluxDownload → Quit**.
 
 ```bash
+swift run FluxDownloadTestRunner
 swift run fluxdownload-cli --help
 ```
 
-## What it does
+## Chrome capture
 
-- HTTP(S) downloads with Range acceleration and a single-stream fallback
-- Pause / resume metadata, queues, and a scheduler (while the app is running)
-- Chrome native messaging: capture downloads and media URLs, including many HLS streams
-- YouTube progressive MP4 (itag 18) and higher video-only qualities with companion audio when needed
-- LinkedIn / `licdn` HLS assembled as `.mp4` from signed segments
-- Site grabber with robots.txt limits
-- Local SQLite history, no analytics
+1. Launch FluxDownload once so the native host is registered.
+2. Chrome → `chrome://extensions` → Developer mode → **Load unpacked** → `Extensions/Chrome`.
+3. Play media (or start a download), then send it from the overlay or popup.
 
-Protected / DRM streams (Netflix-style) are detected and refused. See `docs/adr/009-no-drm.md`.
+The unpacked extension ID must stay `cdhmompibjahkccghpbepifodgcallpi`.
 
-## Develop
+## Documentation
 
-```bash
-swift --version
-swift run FluxDownloadTestRunner
-swift test                         # if XCTest targets are present
-bash Scripts/package-app.sh
-```
+- [CONTRIBUTING.md](CONTRIBUTING.md) — build, layout, invariants
+- [BROWSER_INTEGRATION.md](BROWSER_INTEGRATION.md) — native messaging
+- [DOWNLOAD_ENGINE.md](DOWNLOAD_ENGINE.md) — Range / HLS engine
+- [SECURITY.md](SECURITY.md) — trust boundaries
+- [PRIVACY.md](PRIVACY.md) — what stays on disk
+- [CHANGELOG.md](CHANGELOG.md) — version history
 
-Package layout and engine notes: [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md).
+## License
 
-## Docs
-
-| File | Topic |
-|------|--------|
-| [PRIVACY.md](PRIVACY.md) | What stays on disk |
-| [BROWSER_INTEGRATION.md](BROWSER_INTEGRATION.md) | Native messaging |
-| [VIDEO_DETECTION.md](VIDEO_DETECTION.md) | How media URLs are found |
-| [DOWNLOAD_ENGINE.md](DOWNLOAD_ENGINE.md) | Range / HLS engine |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common failures |
-| [RELEASE.md](RELEASE.md) | Signing and notarization |
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
-
-## Support
-
-FluxDownload is free and open source (MIT). If it saves you time:
-
-**[Buy me a coffee](https://ko-fi.com/moomenaldahdouh)** on Ko-fi.
-
-The same link is in **FluxDownload → About**, **Settings** (footer), and **Help → Buy me a coffee**.
+MIT © Moomen Aldahdouh. See [LICENSE](LICENSE).
