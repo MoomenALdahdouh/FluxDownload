@@ -69,7 +69,19 @@ final class AppServices: ObservableObject {
         self.settings = settings
     }
 
+    private func terminateOtherAppInstances() {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: Brand.bundleIdentifier) where app.processIdentifier != pid {
+            app.terminate()
+        }
+        Thread.sleep(forTimeInterval: 0.4)
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: Brand.bundleIdentifier) where app.processIdentifier != pid {
+            app.forceTerminate()
+        }
+    }
+
     func start() async throws {
+        terminateOtherAppInstances()
         token = try IPCToken.loadOrCreate()
         let server = IPCServer(token: token) { [weak self] envelope in
             await self?.handleBrowser(envelope) ?? BrowserResponse(id: envelope.id, ok: false, error: "App not ready")
@@ -102,6 +114,7 @@ final class AppServices: ObservableObject {
         registerNativeMessagingHost()
         repairIPCIfNeeded()
         refreshDiagnostics()
+        applyLaunchAtLogin()
     }
 
     func repairIPCIfNeeded() {
@@ -436,9 +449,10 @@ final class AppServices: ObservableObject {
     }
 
     private func applyLaunchAtLogin() {
+        let packaged = Bundle.main.bundleURL.pathExtension == "app"
         let service = SMAppService.mainApp
         do {
-            if settings.launchAtLogin {
+            if settings.launchAtLogin && packaged {
                 try service.register()
             } else if service.status == .enabled {
                 try service.unregister()
@@ -451,7 +465,9 @@ final class AppServices: ObservableObject {
     private func refreshStatusItem() {
         let active = downloads.filter { $0.record.status.isActive }
         let speed = active.reduce(Int64(0)) { $0 + $1.record.currentSpeed }
-        statusItem?.button?.title = active.isEmpty ? "↓" : "↓ \(active.count) \(ByteFormat.speed(speed))"
+        statusItem?.button?.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: Brand.name)
+        statusItem?.button?.image?.isTemplate = true
+        statusItem?.button?.title = active.isEmpty ? "" : " \(active.count) \(ByteFormat.speed(speed))"
     }
 
     private var nativeHostManifestPath: URL {

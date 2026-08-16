@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import FluxDownloadCore
 import FluxDownloadEngine
 
@@ -116,7 +117,7 @@ struct SettingsView: View {
         TabView {
             Form {
                 Toggle("Launch at login", isOn: $services.settings.launchAtLogin)
-                Toggle("Launch minimized", isOn: $services.settings.launchMinimized)
+                Toggle("Launch in menu bar (no windows)", isOn: $services.settings.launchMinimized)
                 Toggle("Menu bar extra", isOn: $services.settings.menuBarEnabled)
                 Toggle("Notifications", isOn: $services.settings.notificationsEnabled)
                 Toggle("Notify on complete", isOn: $services.settings.notifyOnComplete)
@@ -175,6 +176,17 @@ struct SettingsView: View {
             .tabItem { Label("Advanced", systemImage: "wrench") }
         }
         .padding(16)
+        .safeAreaInset(edge: .bottom, spacing: 8) {
+            HStack {
+                Text("FluxDownload is free and open source.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Link("Buy me a coffee", destination: Brand.supportLink)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 4)
+        }
         .onDisappear { Task { await services.saveSettings() } }
         .frame(minWidth: 560, minHeight: 420)
     }
@@ -366,5 +378,32 @@ struct PropertiesView: View {
             LabeledContent("Server", value: record.serverName ?? "—")
         }
         .padding()
+    }
+}
+
+struct AboutView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 64, height: 64)
+            Text(Brand.name)
+                .font(.title2.weight(.semibold))
+            Text("Version \(Brand.version)")
+                .foregroundStyle(.secondary)
+            Text(Brand.copyright)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Divider()
+            Text("A native macOS download manager. Closing the window does not stop downloads.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Link("Buy me a coffee", destination: Brand.supportLink)
+                .font(.callout)
+        }
+        .padding(28)
+        .frame(width: 360)
     }
 }

@@ -19,9 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private var aboutWindow: NSWindow?
     private var statusItem: NSStatusItem?
     var addWindow: NSWindow?
     private var statusWindows: [UUID: NSWindow] = [:]
+    private var userInitiatedLaunch = false
 
     static func main() {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Brand.bundleIdentifier)
@@ -33,15 +35,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory)
         app.run()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         NSApp.servicesProvider = self
+        userInitiatedLaunch = NSApp.isActive
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        NSWindow.allowsAutomaticWindowTabbing = false
         Task { await boot() }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        false
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -73,15 +82,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let services = try await AppServices.bootstrap()
             self.services = services
             installMenu()
+            if services.settings.launchAtLogin && !services.settings.launchMinimized {
+                services.settings.launchMinimized = true
+                try? await services.store.saveSettings(services.settings)
+            }
             if services.settings.menuBarEnabled {
                 installStatusItem()
             }
             if !services.settings.onboardingCompleted {
                 showOnboarding()
-            } else if !services.settings.launchMinimized && !services.settings.menuBarOnly {
+            } else if shouldShowMainWindowAtLaunch {
                 showMainWindow()
+            } else {
+                enterBackground()
             }
-            NSApp.activate(ignoringOtherApps: true)
         } catch {
             let alert = NSAlert()
             alert.messageText = "FluxDownload could not start"
@@ -90,7 +104,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private var shouldShowMainWindowAtLaunch: Bool {
+        guard let settings = services?.settings else { return true }
+        if settings.menuBarOnly { return false }
+        let hasTray = settings.menuBarEnabled
+        if hasTray && (settings.launchMinimized || (settings.launchAtLogin && !userInitiatedLaunch)) {
+            return false
+        }
+        return true
+    }
+
+    private func enterBackground() {
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
         if mainWindow == nil, let services {
             let view = MainView(services: services)
             let hosting = NSHostingController(rootView: view)
@@ -101,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.minSize = NSSize(width: 800, height: 480)
             window.center()
             window.isReleasedWhenClosed = false
+            window.isRestorable = false
+            window.delegate = self
             mainWindow = window
         }
         mainWindow?.makeKeyAndOrderFront(nil)
@@ -109,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showSettings() {
         guard let services else { return }
+        NSApp.setActivationPolicy(.regular)
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(services: services))
             let window = NSWindow(contentViewController: hosting)
@@ -116,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.styleMask = [.titled, .closable, .resizable]
             window.setContentSize(NSSize(width: 640, height: 520))
             window.isReleasedWhenClosed = false
+            window.isRestorable = false
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
@@ -123,18 +156,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showAddDownload(url: String = "") {
         guard let services else { return }
+        NSApp.setActivationPolicy(.regular)
         let hosting = NSHostingController(rootView: AddDownloadView(services: services, initialURL: url))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Add Download"
         window.styleMask = [.titled, .closable]
         window.setContentSize(NSSize(width: 520, height: 560))
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         addWindow = window
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
 
     func showDownloadStatus(id: UUID) {
+        NSApp.setActivationPolicy(.regular)
         if let existing = statusWindows[id] {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -151,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.setContentSize(NSSize(width: 450, height: 420))
         window.minSize = NSSize(width: 420, height: 280)
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.level = .normal
         window.hidesOnDeactivate = true
         window.collectionBehavior = [.moveToActiveSpace]
@@ -168,19 +205,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         statusWindows = statusWindows.filter { $0.value !== window }
+        let remaining = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.canBecomeKey }
+        if remaining.isEmpty, services?.settings.menuBarEnabled == true {
+            enterBackground()
+        }
     }
 
     func showOnboarding() {
         guard let services else { return }
+        NSApp.setActivationPolicy(.regular)
         let hosting = NSHostingController(rootView: OnboardingView(services: services))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Welcome"
         window.styleMask = [.titled, .closable]
         window.setContentSize(NSSize(width: 560, height: 520))
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         onboardingWindow = window
         window.center()
         window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func showScheduler() {
@@ -193,9 +237,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         services?.sidebarSelection = .grabber
     }
 
+    private func menuBarIcon() -> NSImage? {
+        let image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: Brand.name)
+        image?.isTemplate = true
+        return image
+    }
+
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "↓"
+        item.button?.image = menuBarIcon()
+        item.button?.imagePosition = .imageLeading
+        item.button?.toolTip = Brand.name
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Open \(Brand.name)", action: #selector(openFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Pause All", action: #selector(pauseAllFromMenu), keyEquivalent: ""))
@@ -257,6 +309,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
 
+        let help = NSMenu(title: "Help")
+        help.addItem(withTitle: "\(Brand.name) on GitHub", action: #selector(openRepository), keyEquivalent: "?")
+        help.addItem(.separator())
+        help.addItem(withTitle: "Buy me a coffee", action: #selector(openSupport), keyEquivalent: "")
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        helpItem.submenu = help
+        main.addItem(helpItem)
+
         NSApp.mainMenu = main
     }
 
@@ -267,9 +327,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func retrySelected() { Task { await services?.retrySelected() } }
     @objc func deleteSelected() { Task { await services?.deleteSelected() } }
     @objc func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = Brand.name
-        alert.informativeText = "Version \(Brand.version)\n\(Brand.copyright)"
-        alert.runModal()
+        if let aboutWindow {
+            aboutWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: AboutView())
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable]
+        window.title = "About \(Brand.name)"
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        aboutWindow = window
+    }
+
+    @objc func openRepository() {
+        NSWorkspace.shared.open(Brand.repositoryLink)
+    }
+
+    @objc func openSupport() {
+        NSWorkspace.shared.open(Brand.supportLink)
     }
 }

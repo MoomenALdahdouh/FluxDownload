@@ -25,28 +25,58 @@ enum NativeHostMain {
         var envelope = try BrowserMessageValidator.decode(incoming)
         let token = try IPCToken.loadOrCreate()
         envelope.token = token
-        let response: BrowserResponse
-        do {
-            response = try IPCClient.send(envelope)
-        } catch {
-            try launchApp()
-            var lastError: Error = error
-            response = try {
-                for _ in 0..<40 {
-                    Thread.sleep(forTimeInterval: 0.25)
-                    do { return try IPCClient.send(envelope) } catch { lastError = error }
-                }
-                throw lastError
-            }()
-        }
+        ensureCurrentApp(token: token)
+        let response = try sendIPC(envelope)
         try NativeMessagingCodec.writeMessage(try BrowserMessageValidator.encode(response), to: FileHandle.standardOutput)
     }
 
-    static func launchApp() throws {
+    static func sendIPC(_ envelope: BrowserEnvelope) throws -> BrowserResponse {
+        do {
+            return try IPCClient.send(envelope)
+        } catch {
+            try launchOwnApp()
+            var lastError: Error = error
+            for _ in 0..<40 {
+                Thread.sleep(forTimeInterval: 0.25)
+                do { return try IPCClient.send(envelope) } catch { lastError = error }
+            }
+            throw lastError
+        }
+    }
+
+    static func ensureCurrentApp(token: String) {
+        var ping = BrowserEnvelope(type: .ping, payload: .empty)
+        ping.token = token
+        let current = try? IPCClient.send(ping)
+        if current?.ok == true, current?.appVersion == Brand.version {
+            return
+        }
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: Brand.bundleIdentifier) {
+            app.terminate()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: Brand.bundleIdentifier) {
+            app.forceTerminate()
+        }
+        try? launchOwnApp()
+        for _ in 0..<40 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if let pinged = try? IPCClient.send(ping), pinged.appVersion == Brand.version {
+                return
+            }
+        }
+    }
+
+    static func launchOwnApp() throws {
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let appURL = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         if appURL.pathExtension == "app" {
-            NSWorkspace.shared.open(appURL)
+            let config = NSWorkspace.OpenConfiguration()
+            let done = DispatchSemaphore(value: 0)
+            NSWorkspace.shared.openApplication(at: appURL, configuration: config) { _, _ in
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 8)
             return
         }
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Brand.bundleIdentifier) {

@@ -35,7 +35,7 @@ let package = Package(
         ),
         .target(
             name: "FluxDownloadEngine",
-            dependencies: ["FluxDownloadCore", "FluxDownloadPersistence"],
+            dependencies: ["FluxDownloadCore", "FluxDownloadPersistence", "FluxDownloadMedia"],
             path: "Sources/FluxDownloadEngine",
             linkerSettings: [
                 .linkedFramework("Network")

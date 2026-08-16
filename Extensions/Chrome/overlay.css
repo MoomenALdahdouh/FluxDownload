@@ -12,30 +12,28 @@
   z-index: 2147483646;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px 0 8px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: rgba(20, 20, 22, 0.88);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  border-radius: 50%;
+  background: rgba(10, 132, 255, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
   cursor: pointer;
-  backdrop-filter: blur(12px);
+  color: #fff;
+  font-size: 11px;
+  line-height: 20px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .flux-chip:hover {
-  background: rgba(28, 28, 32, 0.96);
+  background: #0a84ff;
 }
 
-.flux-chip-mark {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #0a84ff;
-  color: white;
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
+.flux-chip[hidden] {
+  display: none !important;
 }
 
 .flux-panel {

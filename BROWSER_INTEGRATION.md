@@ -1,4 +1,4 @@
-# BROWSER_INTEGRATION.md
+# Browser integration
 
 Chrome is implemented. Safari is not.
 

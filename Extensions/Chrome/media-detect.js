@@ -2,6 +2,47 @@ function fluxIsHttp(url) {
   return typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
 }
 
+function fluxLinkedInSegmentMeta(url) {
+  try {
+    const parts = new URL(url, typeof location !== "undefined" ? location.href : undefined).pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1]) && /^\d+$/.test(parts[parts.length - 2])) {
+      return { index: Number(parts[parts.length - 2]), time: Number(parts[parts.length - 1]) };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function fluxHasLinkedInSignature(url) {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : undefined);
+    return parsed.searchParams.has("e") && parsed.searchParams.has("t");
+  } catch {
+    return false;
+  }
+}
+
+function fluxStableMediaURLs(urls) {
+  const unique = [];
+  const seen = new Set();
+  for (const url of urls || []) {
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    unique.push(url);
+  }
+  const signed = unique.filter(fluxHasLinkedInSignature);
+  const list = signed.length ? signed : unique;
+  return list.sort((a, b) => {
+    const left = fluxLinkedInSegmentMeta(a);
+    const right = fluxLinkedInSegmentMeta(b);
+    if (left && right) return left.index - right.index || left.time - right.time;
+    if (left && !right) return 1;
+    if (!left && right) return -1;
+    return 0;
+  });
+}
+
 function fluxExt(url) {
   try {
     const path = new URL(url, typeof location !== "undefined" ? location.href : undefined).pathname.toLowerCase();
@@ -45,7 +86,7 @@ function fluxContainer(url, mime) {
   if (["m3u8", "m3u"].includes(ext)) return "HLS";
   if (ext === "mpd") return "DASH";
   if (["mp3", "m4a", "aac"].includes(ext)) return ext.toUpperCase();
-  if (type.includes("mpegurl")) return "HLS";
+  if (type.includes("mpegurl") || fluxIsHLSUrl(url, type)) return "HLS";
   if (type.includes("dash")) return "DASH";
   if (type.startsWith("audio/mpeg")) return "MP3";
   if (type.startsWith("audio/")) return "Audio";
@@ -63,7 +104,7 @@ function fluxIsJunkURL(url) {
 
 function fluxHasMediaExtension(url) {
   const ext = fluxExt(url);
-  return ["mp4", "m4v", "webm", "mov", "mkv", "m3u8", "mpd", "mp3", "m4a", "aac", "ogg", "wav", "flac", "opus"].includes(ext);
+  return ["mp4", "m4v", "webm", "mov", "mkv", "m3u8", "mpd", "mp3", "m4a", "aac", "ogg", "wav", "flac", "opus", "m4s", "ts"].includes(ext);
 }
 
 function fluxIsMediaURL(url, mime) {
@@ -87,8 +128,77 @@ function fluxIsYouTubeProtocolURL(url) {
   return false;
 }
 
+function fluxLinkedInParts(url) {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : undefined);
+    if (!parsed.hostname.toLowerCase().includes("licdn.com")) return null;
+    const path = parsed.pathname;
+    const v2 = path.match(/\/playlist\/vid\/v2\/([^/]+)\/([^/]+)/i);
+    if (v2) return { videoId: v2[1], rendition: v2[2] };
+    const dash = path.match(/\/playlist\/vid\/dash\/([^/]+)/i);
+    if (dash) return { videoId: dash[1], rendition: "dash" };
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function fluxLinkedInIsJunk(url) {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : undefined);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (path.includes("/dms/image/") || /videocover|thumbnail|poster/i.test(path)) return true;
+    if (/webvtt|caption|subtitle|transcript/i.test(path) || path.includes("/playlist/vid/dash/")) return true;
+    if (host.includes("media.licdn.com") && path.includes("/image/")) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function fluxMediaDedupeKey(url) {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : undefined);
+    if (parsed.hostname.toLowerCase().includes("licdn.com")) {
+      return `${parsed.origin}${parsed.pathname}`;
+    }
+    return fluxCanonicalMediaURL(url);
+  } catch {
+    return url;
+  }
+}
+
+function fluxNormalizeMediaURL(url) {
+  try {
+    return new URL(url, typeof location !== "undefined" ? location.href : undefined).href;
+  } catch {
+    return url;
+  }
+}
+
+function fluxLinkedInDominantId(urls) {
+  const counts = new Map();
+  for (const url of urls) {
+    if (fluxLinkedInIsJunk(url)) continue;
+    const id = fluxLinkedInParts(url)?.videoId;
+    if (!id) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [id, count] of counts) {
+    if (count > bestCount) {
+      best = id;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 function fluxLooksLikeMedia(url, mime) {
   if (!fluxIsHttp(url) || fluxIsJunkURL(url) || fluxIsYouTubeProtocolURL(url)) return false;
+  if (fluxLinkedInIsJunk(url)) return false;
   const type = (mime || "").split(";")[0].trim().toLowerCase();
   if (type.includes("yt-ump") || type.includes("vnd.yt")) return false;
   if (fluxIsMediaURL(url, type)) return true;
@@ -103,8 +213,27 @@ function fluxLooksLikeMedia(url, mime) {
     if (parsed.searchParams.has("itag") && (host.includes("youtube") || host.includes("googlevideo"))) return true;
     if (host.includes("video.twimg.com") || host.includes("vimeocdn.com")) return true;
     if (host.includes("fbcdn.net") && (path.includes(".mp4") || path.includes("/video"))) return true;
-    if (path.includes(".m3u8") || path.includes(".mpd")) return true;
-    if (/(^|\/)(hls|dash|manifest)(\/|$|\.)/i.test(path)) return true;
+    if (host.includes("licdn.com")) {
+      if (path.includes("/dms/image/") || path.includes("videocover")) return false;
+      if (path.includes("/playlist/") || path.includes("/vid/") || path.includes(".mp4") || path.includes(".m3u8") || path.includes(".m4s")) return true;
+    }
+    if (path.includes(".m3u8") || path.includes(".mpd") || path.includes(".m4s")) return true;
+    if (/(^|\/)(hls|manifest)(\/|$|\.)/i.test(path)) return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function fluxIsHLSUrl(url, mime) {
+  const type = (mime || "").toLowerCase();
+  if (type.includes("mpegurl")) return true;
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : undefined);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (path.includes(".m3u8") || path.endsWith(".m3u")) return true;
+    if (host.includes("licdn.com") && (path.includes("/playlist/") || path.includes("/vid/")) && !fluxLinkedInIsJunk(url)) return true;
   } catch {
     // ignore
   }
@@ -125,9 +254,15 @@ function fluxCanonicalMediaURL(url) {
 function fluxStreamKey(url) {
   try {
     const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
     const itag = parsed.searchParams.get("itag");
-    if (itag && (parsed.hostname.includes("googlevideo") || parsed.pathname.includes("videoplayback"))) {
+    if (itag && (host.includes("googlevideo") || parsed.pathname.includes("videoplayback"))) {
       return `yt:${itag}:${(parsed.searchParams.get("mime") || "").toLowerCase()}`;
+    }
+    if (host.includes("licdn.com") || host.endsWith("linkedin.com")) {
+      const parts = fluxLinkedInParts(url);
+      const rendition = parts?.rendition || "";
+      return `licdn:${parts?.videoId || parsed.pathname}:${rendition}`;
     }
     return `${parsed.origin}${parsed.pathname}:${parsed.searchParams.get("id") || ""}:${itag || ""}`;
   } catch {
@@ -231,20 +366,23 @@ function fluxFormatFromURL(url, mime, extras = {}) {
 
 function fluxParseHLS(text, baseURL) {
   const lines = text.split(/\r?\n/).map((line) => line.trim());
-  if (!lines[0]?.startsWith("#EXTM3U")) return { protected: false, formats: [] };
+  if (!lines[0]?.startsWith("#EXTM3U") && !text.includes("#EXTM3U")) return { protected: false, formats: [] };
   let protectedMedia = false;
   let pending = null;
   const formats = [];
   for (const line of lines) {
     if (line.startsWith("#EXT-X-KEY") || line.startsWith("#EXT-X-SESSION-KEY")) {
       const method = /METHOD=([^,]+)/.exec(line)?.[1] || "";
-      if (/SAMPLE-AES|FAIRPLAY|SAMPLE-AES-CTR/i.test(method)) protectedMedia = true;
+      if (/SAMPLE-AES|FAIRPLAY|SAMPLE-AES-CTR|AES-128/i.test(method) && !/^NONE$/i.test(method)) {
+        if (/SAMPLE-AES|FAIRPLAY|SAMPLE-AES-CTR/i.test(method)) protectedMedia = true;
+      }
     }
     if (line.startsWith("#EXT-X-STREAM-INF")) {
       pending = line;
       continue;
     }
     if (!line || line.startsWith("#")) continue;
+    if (!pending) continue;
     const url = new URL(line, baseURL).href;
     const height = Number(/RESOLUTION=\d+x(\d+)/.exec(pending || "")?.[1] || "") || null;
     const codecs = /CODECS="([^"]+)"/.exec(pending || "")?.[1] || "";
@@ -262,17 +400,23 @@ function fluxParseHLS(text, baseURL) {
 }
 
 async function fluxExpandHLS(url) {
+  url = fluxNormalizeMediaURL(url);
+  const fallback = [fluxFormatFromURL(url, "application/vnd.apple.mpegurl")];
   try {
     const response = await fetch(url, { credentials: "include" });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      return fallback;
+    }
     const text = await response.text();
     const parsed = fluxParseHLS(text, url);
     if (parsed.protected) {
-      return parsed.formats.map((format) => ({ ...format, protected: true }));
+      return parsed.formats.length
+        ? parsed.formats.map((format) => ({ ...format, protected: true }))
+        : [{ ...fallback[0], protected: true }];
     }
-    return parsed.formats.length ? parsed.formats : [fluxFormatFromURL(url, "application/vnd.apple.mpegurl")];
+    return parsed.formats.length ? parsed.formats : fallback;
   } catch {
-    return [fluxFormatFromURL(url, "application/vnd.apple.mpegurl")];
+    return fallback;
   }
 }
 
@@ -282,17 +426,30 @@ function fluxMergeFormats(formats) {
     if (!format?.url || format.protected) continue;
     const key = fluxStreamKey(format.url);
     const previous = seen.get(key);
-    if (!previous || (format.height || 0) > (previous.height || 0)) {
-      seen.set(key, format);
+    const incoming = [...(format.segmentURLs || []), format.url];
+    if (!previous) {
+      seen.set(key, { ...format, segmentURLs: fluxStableMediaURLs(incoming) });
+      continue;
     }
+    const taller = (format.height || 0) > (previous.height || 0);
+    const betterPlaylist = fluxIsHLSUrl(format.url) && !fluxIsHLSUrl(previous.url);
+    const chosen = { ...((taller || betterPlaylist) ? format : previous) };
+    chosen.segmentURLs = fluxStableMediaURLs([
+      ...(previous.segmentURLs || []),
+      previous.url,
+      ...incoming
+    ]);
+    if (chosen.segmentURLs[0]) chosen.url = chosen.segmentURLs[0];
+    seen.set(key, chosen);
   }
-  return [...seen.values()].sort((a, b) => {
+  const merged = [...seen.values()].sort((a, b) => {
     const bothA = a.hasVideo && a.hasAudio ? 1 : 0;
     const bothB = b.hasVideo && b.hasAudio ? 1 : 0;
     if (bothA !== bothB) return bothB - bothA;
     if (Boolean(a.hasVideo) !== Boolean(b.hasVideo)) return a.hasVideo ? -1 : 1;
     return (b.height || 0) - (a.height || 0);
   });
+  return merged;
 }
 
 function fluxBestAudio(formats) {

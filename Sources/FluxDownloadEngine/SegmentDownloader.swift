@@ -101,7 +101,8 @@ public struct SegmentDownloader: Sendable {
         headers: [String: String],
         fd: Int32,
         shouldCancel: @escaping @Sendable () -> Bool,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        httpRange: (start: Int64, end: Int64)? = nil
     ) async throws -> Int64 {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
@@ -109,7 +110,9 @@ public struct SegmentDownloader: Sendable {
         if let referrer { request.setValue(referrer, forHTTPHeaderField: "Referer") }
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let start = offset + resumeFrom
-        if let length {
+        if let httpRange {
+            request.setValue("bytes=\(httpRange.start)-\(httpRange.end)", forHTTPHeaderField: "Range")
+        } else if let length {
             let end = offset + length - 1
             request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
         } else if resumeFrom > 0 {
