@@ -24,4 +24,4 @@ The packaged app is `build/FluxDownload.app` (ad-hoc signed unless `CODESIGN_IDE
 
 Keep YouTube progressive itag 18 and googlevideo `omitRange` behavior intact unless you are deliberately changing that path.
 
-Please do not commit `.cursor/`, `.build/`, `build/`, or Keychain material.
+Please do not commit `.build/`, `build/`, or Keychain material.
